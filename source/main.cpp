@@ -1,10 +1,24 @@
-#include "opencv2\opencv.hpp"
+#include "opencv2/opencv.hpp"
+#include <boost/archive/text_oarchive.hpp>
+#include <boost/archive/text_iarchive.hpp>
+#include <boost/serialization/string.hpp>
+#include <boost/serialization/vector.hpp>
+#include <fstream>
 #include <sstream>
 #include <iomanip>
 #include "sort_permutation.h"
 #include "utility.h"
 
 using namespace cv;
+
+// Step that is in progress
+enum class Step {
+  THRESHOLDING,
+  SEGMENT_DETECTION,
+  SEGMENT_TAGGING,
+  SEGMENT_MERGING,
+  SEGMENT_EXPORTING
+};
 
 // Tags that can be assigned to a segment
 enum class Tag {
@@ -16,8 +30,11 @@ enum class Tag {
 
 // Data being processed
 struct Data {
+  Step step;
+
   Mat input_image_3c;
   Mat input_image_1c;
+  int threshold;
   Mat threshold_mask_image;
   std::vector<std::vector<Point>> contours;
   std::vector<uint> areas;
@@ -34,19 +51,42 @@ struct Data {
 
 // Settings used for processing
 struct Settings {
-  String input_image_file;
+  std::string input_image_file;
+  std::string progress_file;
   uint min_segment_area;
   uint outline_thickness;
   float surroundings_size;
-  String output_directory;
+  std::string output_directory;
   uint crop_margin;
 };
+
+namespace boost {
+  namespace serialization {
+    template<class Archive>
+    void serialize(Archive& ar, Data& data, const unsigned int version) {
+      ar & data.step;
+      ar & data.threshold;
+      ar & data.tags;
+    }
+    template<class Archive>
+    void serialize(Archive& ar, Settings& settings, const unsigned int version) {
+      ar & settings.input_image_file;
+      ar & settings.progress_file;
+      ar & settings.min_segment_area;
+      ar & settings.outline_thickness;
+      ar & settings.surroundings_size;
+      ar & settings.output_directory;
+      ar & settings.crop_margin;
+    }
+  }
+}
 
 // Parse the command line arguments
 static bool ParseCommandLineArguments(int argc, char* argv[], Settings* out_settings) {
   const String clp_keys =
     "{help h ? usage | | show help on the command line arguments}"
     "{@image | | image containing characters to be segmented}"
+    "{progress-file | | progress file to resume a previous Image Segmentation session }"
     "{outline-thickness | 4 | thickness of the outline used to highlight segments}"
     "{min-area | 20 | min area of a detected character (to remove noise speckles)}"
     "{surroundings-size | 10.0 | relative size of surroundings to show on preview}"
@@ -63,6 +103,7 @@ static bool ParseCommandLineArguments(int argc, char* argv[], Settings* out_sett
 
   // Parse arguments
   out_settings->input_image_file = clp.get<String>("@image");
+  out_settings->progress_file = clp.get<String>("progress-file");
   out_settings->outline_thickness = clp.get<uint>("outline-thickness");
   out_settings->min_segment_area = clp.get<uint>("min-area");
   out_settings->surroundings_size = clp.get<float>("surroundings-size");
@@ -196,6 +237,22 @@ static void MoveSegmentsByTag(std::vector<std::vector<Point>>* in_contours, std:
   }
 }
 
+// Remove segments of a specific tag
+static void RemoveSegmentsByTag(std::vector<std::vector<Point>>* in_contours, std::vector<Tag>* in_tags, std::vector<Rect>* in_bounding_rectangles, Tag tag) {
+  int i = 0;
+  while (true) {
+    if (in_tags->at(i) == tag) {
+      in_contours->erase(in_contours->begin() + i);
+      in_tags->erase(in_tags->begin() + i);
+      in_bounding_rectangles->erase(in_bounding_rectangles->begin() + i);
+    }
+    else {
+      i += 1;
+    }
+    if (i >= in_tags->size()) { break; }
+  }
+}
+
 // Saves a segment to an image file
 static void SaveSegment(const Mat& image, const std::vector<Point>& contour, const Rect& bounding_rectangle, const String& path, const String& name, int margin) {
   uint x1 = clip(bounding_rectangle.x - margin, 0, image.cols);
@@ -227,8 +284,25 @@ static void SaveMultiSegment(const Mat& image, const std::vector<std::vector<Poi
   imwrite(path + "/" + name + ".jpg", output);
 }
 
+// Save progress to a file
+static void SaveProgress(const String& filename, const Data* data, const Settings* settings) {
+  std::ofstream ofs(filename);
+  boost::archive::text_oarchive oa(ofs);
+  oa << *data;
+  oa << *settings;
+}
+
+// Load progress from a file
+static void LoadProgress(const String& filename, Data* data, Settings* settings) {
+  std::ifstream ifs(filename);
+  boost::archive::text_iarchive ia(ifs);
+  ia >> *data;
+  ia >> *settings;
+}
+
 // Run the thresholding stage
 static void RunThresholdingStage(Data* data, Settings* settings) {
+  data->step = Step::THRESHOLDING;
   std::cout << "Step 1. Thresholding" << std::endl;
   std::cout << "================" << std::endl;
   std::cout << ">> Use the slider to define the threshold for separating the characters from" << std::endl
@@ -237,9 +311,9 @@ static void RunThresholdingStage(Data* data, Settings* settings) {
             << "   as possible, without removing parts of characters." << std::endl;
 
   namedWindow("CharacterSegmenter (Step 1. Thresholding)", WINDOW_NORMAL);
-  int t = 192;
-  createTrackbar("Threshold", "CharacterSegmenter (Step 1. Thresholding)", &t, 255, CallbackThreshold, data);
-  CallbackThreshold(t, data);
+  data->threshold = 192;
+  createTrackbar("Threshold", "CharacterSegmenter (Step 1. Thresholding)", &(data->threshold), 255, CallbackThreshold, data);
+  CallbackThreshold(data->threshold, data);
   std::cout << ">> Press [SPACE] to confirm your threshold" << std::endl;
   while (waitKey(0) != ' ');
   destroyWindow("CharacterSegmenter (Step 1. Thresholding)");
@@ -247,6 +321,7 @@ static void RunThresholdingStage(Data* data, Settings* settings) {
 
 // Run segment detection stage
 static void RunSegmentDetectionStage(Data* data, Settings* settings) {
+  data->step = Step::SEGMENT_DETECTION;
   std::cout << "Step 2. Character detection" << std::endl;
   std::cout << "================" << std::endl;
   std::cout << ">> Detecting all individual characters after thresholding. This can" << std::endl
@@ -265,6 +340,7 @@ static void RunSegmentDetectionStage(Data* data, Settings* settings) {
 
 // Run segment tagging stage
 static void RunSegmentTaggingStage(Data* data, Settings* settings) {
+  data->step = Step::SEGMENT_TAGGING;
   std::cout << "Step 3. Segment tagging" << std::endl;
   std::cout << "================" << std::endl;
   std::cout << ">> Tagging segments, use the following keys:" << std::endl
@@ -322,10 +398,13 @@ static void RunSegmentTaggingStage(Data* data, Settings* settings) {
   destroyWindow("CharacterSegmenter (Step 3. Segment tagging)");
   MoveSegmentsByTag(&data->contours, &data->tags, &data->bounding_rectangles, Tag::CORRECT, &data->contours_correct, &data->bounding_rectangles_correct);
   MoveSegmentsByTag(&data->contours, &data->tags, &data->bounding_rectangles, Tag::MERGED, &data->contours_merged, &data->bounding_rectangles_merged);
+  RemoveSegmentsByTag(&data->contours, &data->tags, &data->bounding_rectangles, Tag::NOISE);
+  SaveProgress("../progress.cs", data, settings);
 }
 
 // Run partial segment merging stage
 static void RunPartialSegmentMergingStage(Data* data, Settings* settings) {
+  data->step = Step::SEGMENT_MERGING;
   std::cout << "Step 4. Partial segment merging" << std::endl;
   std::cout << "================" << std::endl;
   std::cout << ">> Merging partial segments. The partial segments in [BLUE] are looking for"
@@ -407,6 +486,7 @@ static void RunPartialSegmentMergingStage(Data* data, Settings* settings) {
 
 // Run segment exporting stage
 static void RunSegmentExportingStage(Data* data, Settings* settings) {
+  data->step = Step::SEGMENT_EXPORTING;
   std::cout << "Step 5. Segment exporting" << std::endl;
   std::cout << "================" << std::endl;
   std::cout << ">> Isolating segments and exporting to files." << std::endl
@@ -458,6 +538,9 @@ int main(int argc, char* argv[]) {
   cvtColor(data.input_image_3c, data.input_image_1c, CV_BGR2GRAY);
 
   // Run the procedure
+
+  LoadProgress("../progress.cs", &data, &settings);
+
   RunThresholdingStage(&data, &settings);
   RunSegmentDetectionStage(&data, &settings);
   RunSegmentTaggingStage(&data, &settings);
