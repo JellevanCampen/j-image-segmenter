@@ -18,8 +18,15 @@ public:
   };
   std::vector<cv::Point> contour_;
   cv::Rect bounding_rectangle_;
-  Tag tag_;
-  uint area_;
+  Tag tag_{ Tag::UNDEFINED };
+  uint area_{ 0 };
+
+  Segment() { }
+
+  Segment(std::vector<cv::Point> contour, Tag tag = Tag::UNDEFINED) : contour_(contour), tag_(tag) {
+    bounding_rectangle_ = cv::boundingRect(contour_);
+    area_ = (unsigned int)cv::contourArea(contour_);
+  }
 
   // Serialization via Boost
   template<class Archive>

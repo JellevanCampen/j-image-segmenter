@@ -13,7 +13,7 @@ namespace serialization {
   }
   template<class Archive>
   void serialize(Archive & ar, cv::Rect & r, const unsigned int version) {
-    ar & r.x
+    ar & r.x; 
     ar & r.y;
     ar & r.width;
     ar & r.height;

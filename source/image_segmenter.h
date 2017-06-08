@@ -68,9 +68,6 @@ public:
     cv::cvtColor(image_3c_, image_1c_, CV_BGR2GRAY);
   }
 
-  // Loads and plays back progress from file
-  void LoadProgress(const std::string& progress_file);
-
   // Different steps in the procedure
   void RunThresholdingStep(bool interactive = false);
   void RunSegmentDetectionStep(bool interactive = false);
@@ -79,7 +76,9 @@ public:
   void RunSegmentExportingStep();
 
   // Processing subroutines
-  std::vector<Segment> PerformSegmentation(const cv::Mat& threshold_mask_image_1c, unsigned int min_segment_area) const;
+  void LoadProgress(const std::string& progress_file);
+  void SaveProgress(const std::string& progress_file);
+  static std::vector<Segment> PerformSegmentation(const cv::Mat& threshold_mask_image_1c, unsigned int min_segment_area);
   cv::Mat GenerateSegmentationPreview(const cv::Mat& image_background, const std::vector<Segment>& segments, int line_thickness) const;
   void GenerateSegmentPreviews(const cv::Mat& image, const Segment& segment, const cv::Scalar& color, float surroundings_size, cv::Mat* out_preview, cv::Mat* out_preview_contour) const;
   void GenerateSegmentPreviews(const cv::Mat& image, const std::vector<Segment>& segments, const std::vector<cv::Scalar>& colors, float surroundings_size, cv::Mat* out_preview, cv::Mat* out_preview_contour) const;

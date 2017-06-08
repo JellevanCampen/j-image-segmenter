@@ -38,6 +38,7 @@ int main(int argc, char* argv[]) {
   }
   if (image_file.compare("") == 0) {
     std::cout << "ERROR: no input image specified. Use 'ImageSegmenter -help' for info." << std::endl;
+    return -1;
   }
 
   // Perform image segmentation

@@ -9,17 +9,14 @@ namespace j {
     ar & segments_todo_;
     ar & segments_correct_;
     ar & segments_merged_;
-    ar & input_image_file_;
+    ar & segments_partial_sets_;
+    ar & image_file_;
     ar & threshold_;
     ar & min_segment_area_;
     ar & outline_thickness_;
     ar & surroundings_size_;
     ar & output_directory_;
     ar & crop_margin_;
-  }
-
-  void ImageSegmenter::LoadProgress(const std::string & progress_file) {
-    // Todo: load progress from a file
   }
 
   void ImageSegmenter::RunThresholdingStep(bool interactive) {
@@ -70,10 +67,17 @@ namespace j {
               << "   [C] Correct segment (will be stored as is)" << std::endl
               << std::endl
               << "   [Z] Undo (move back in the tagging sequence)" << std::endl
+              << "   [S] Save progress" << std::endl
               << "================" << std::endl;
     cv::namedWindow("ImageSegmenter (Step 3. Segment tagging)", cv::WINDOW_NORMAL);
-      
+    
+    // Start at the first untagged segment
     auto it = segments_todo_.begin();
+    while (it != segments_todo_.end()) {
+      if (it->tag_ == Segment::Tag::UNDEFINED) { break; }
+      it++;
+    }
+
     while (it != segments_todo_.end()) {
       std::cout << ">> Tagging segment [" << (it - segments_todo_.begin() + 1) << "/" << segments_todo_.size() << "]: ";
       cv::Mat preview, preview_contour;
@@ -81,7 +85,7 @@ namespace j {
 
       bool show_contour = true;
       int last_key = -1;
-      while (last_key != 'n' && last_key != 'p' && last_key != 'm' && last_key != 'c' && last_key != 'z') {
+      while (last_key != 'n' && last_key != 'p' && last_key != 'm' && last_key != 'c' && last_key != 'z' && last_key != 's') {
         show_contour = !show_contour;
         imshow("ImageSegmenter (Step 3. Segment tagging)", show_contour ? preview_contour : preview);
         last_key = cv::waitKeyEx(250);
@@ -110,8 +114,14 @@ namespace j {
       case 'z':
         if (it != segments_todo_.begin()) {
           std::cout << "... undoing previous tag" << std::endl;
-          it--;
+          if (it != segments_todo_.begin()) { it--; }
+          it->tag_ = Segment::Tag::UNDEFINED;
         }
+        break;
+      case 's':
+        std::cout << std::endl << ">> Saving progress ... ";
+        SaveProgress(image_file_ + ".progress");
+        std::cout << "DONE" << std::endl;
         break;
       }
     }
@@ -199,7 +209,21 @@ namespace j {
     SaveMultipleSegmentsToFiles(image_3c_, segments_partial_sets_, output_directory_ + "/partial_sets", "p_", crop_margin_);
   }
 
-  std::vector<Segment> ImageSegmenter::PerformSegmentation(const cv::Mat& threshold_mask_image_1c, unsigned int min_segment_area) const {
+  void ImageSegmenter::LoadProgress(const std::string & progress_file) {
+    std::ifstream ifs(progress_file);
+    boost::archive::text_iarchive ia(ifs);
+    ia >> *this;
+    ifs.close();
+  }
+
+  void ImageSegmenter::SaveProgress(const std::string & progress_file) {
+    std::ofstream ofs(progress_file);
+    boost::archive::text_oarchive oa(ofs);
+    oa << *this;  
+    ofs.close();
+  }
+
+  std::vector<Segment> ImageSegmenter::PerformSegmentation(const cv::Mat& threshold_mask_image_1c, unsigned int min_segment_area) {
     cv::Mat image_thresholded_inverted = 255 - threshold_mask_image_1c;
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(image_thresholded_inverted, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
@@ -208,7 +232,7 @@ namespace j {
     std::vector<Segment> segments;
     for (const auto& c : contours) {
       Segment s;
-      s.area_ = cv::contourArea(c);
+      s.area_ = (unsigned int)cv::contourArea(c);
       if (s.area_ < min_segment_area) { continue; }
       s.contour_ = c;
       s.bounding_rectangle_ = cv::boundingRect(c);
@@ -235,7 +259,7 @@ namespace j {
 
   void ImageSegmenter::GenerateSegmentPreviews(const cv::Mat & image, const Segment & segment, const cv::Scalar & color, float surroundings_size, cv::Mat * out_preview, cv::Mat * out_preview_contour) const {
     int size = max(segment.bounding_rectangle_.width, segment.bounding_rectangle_.height);
-    int size_surroundings = size * surroundings_size;
+    int size_surroundings = int(size * surroundings_size);
     int x_center = segment.bounding_rectangle_.x + segment.bounding_rectangle_.width / 2;
     int y_center = segment.bounding_rectangle_.y + segment.bounding_rectangle_.height / 2;
     int x1 = clip(x_center - size_surroundings, 0, image.cols);
